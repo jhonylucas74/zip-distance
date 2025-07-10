@@ -1,56 +1,34 @@
 import { DistanceService } from '../services/distanceService';
 import { DatabaseService } from '../services/databaseService';
-import { ExternalApiService } from '../services/externalApiService';
+import { BenchmarkService } from '../services/benchmarkService';
+import { LoggerService } from '../services/loggerService';
 
-// Test data from CSV - various zip codes across different states
-const TEST_ZIP_PAIRS = [
-  { from: '99509', to: '99547', description: 'Alaska - Anchorage to Atka' },
-  { from: '99509', to: '99660', description: 'Alaska - Anchorage to Saint Paul Island' },
-  { from: '36027', to: '36456', description: 'Alabama - Eufaula to Mc Kenzie' },
-  { from: '36027', to: '36922', description: 'Alabama - Eufaula to Ward' },
-  { from: '36446', to: '36346', description: 'Alabama - Fulton to Jack' },
-  { from: '99579', to: '99747', description: 'Alaska - Egegik to Kaktovik' },
-  { from: '99749', to: '99919', description: 'Alaska - Kiana to Thorne Bay' },
-  { from: '99754', to: '36027', description: 'Alaska to Alabama - Koyukuk to Eufaula' }
-];
+// Get test pairs from static data (FreeMapTools)
+const TEST_ZIP_PAIRS = BenchmarkService.getTestPairs();
 
 describe('API Benchmark Tests', () => {
   let dbService: DatabaseService;
 
   beforeAll(async () => {
     dbService = DatabaseService.getInstance();
+    // Clear previous logs
+    LoggerService.clearLogs();
   });
 
   afterAll(async () => {
     dbService.close();
   });
 
-  describe('External API Connectivity', () => {
-    test('should be able to connect to external API', async () => {
-      const testDistance = await ExternalApiService.getDistance('99509', '99547', 'km');
-      
-      if (testDistance === null) {
-        console.warn('External API is not accessible. Skipping external API tests.');
-        // Skip this test if external API is not available
-        expect(true).toBe(true);
-        return;
-      }
-      
-      expect(testDistance).toBeGreaterThan(0);
-      console.log(`External API test successful: ${testDistance.toFixed(2)} km`);
-    }, 10000);
-  });
-
-  describe('Distance Calculation Accuracy (External API)', () => {
+  describe('Distance Calculation Accuracy (FreeMapTools Data)', () => {
     test.each(TEST_ZIP_PAIRS)(
-      'should calculate distance within 5%% threshold for $from to $to ($description)',
+      'should calculate distance within 5% threshold for $from to $to ($description)',
       async ({ from, to, description }) => {
         // Get coordinates from our database
         const fromLocation = await dbService.getZipCode(from);
         const toLocation = await dbService.getZipCode(to);
 
         if (!fromLocation || !toLocation) {
-          console.warn(`Skipping test: Missing data for ${from} or ${to}`);
+          LoggerService.logBenchmark(`Skipping test: Missing data for ${from} or ${to}`);
           return;
         }
 
@@ -63,31 +41,29 @@ describe('API Benchmark Tests', () => {
           'km'
         );
 
-        // Compare with external API
-        const comparison = await ExternalApiService.compareDistances(
+        // Compare with static data (FreeMapTools)
+        const comparison = BenchmarkService.compareWithStaticData(
           from,
           to,
-          ourDistance,
-          'km'
+          ourDistance
         );
 
-        if (comparison.externalDistance === null) {
-          console.warn(`External API failed for ${from} to ${to}, skipping test`);
+        if (comparison.staticDistance === null) {
+          LoggerService.logBenchmark(`No static data available for ${from} to ${to}`);
           return;
         }
 
         // Log the comparison details
-        console.log(`\n${description}:`);
-        console.log(`  Our API: ${ourDistance.toFixed(2)} km`);
-        console.log(`  External API: ${comparison.externalDistance.toFixed(2)} km`);
-        console.log(`  Difference: ${comparison.difference?.toFixed(2)} km`);
-        console.log(`  Percentage: ${comparison.percentageDifference?.toFixed(2)}%`);
+        LoggerService.logBenchmark(`\n${description} (${from} → ${to}):`);
+        LoggerService.logBenchmark(`  Our API: ${ourDistance.toFixed(2)} km`);
+        LoggerService.logBenchmark(`  FreeMapTools: ${comparison.staticDistance.toFixed(2)} km`);
+        LoggerService.logBenchmark(`  Difference: ${comparison.difference?.toFixed(2)} km`);
+        LoggerService.logBenchmark(`  Percentage: ${comparison.percentageDifference?.toFixed(2)}%`);
 
         // Assert that the difference is within threshold
         expect(comparison.isWithinThreshold).toBe(true);
         expect(comparison.percentageDifference).toBeLessThanOrEqual(5);
-      },
-      30000 // 30 second timeout for external API calls
+      }
     );
   });
 
@@ -102,7 +78,7 @@ describe('API Benchmark Tests', () => {
         const toLocation = await dbService.getZipCode(pair.to);
 
         if (!fromLocation || !toLocation) {
-          console.warn(`Skipping: Missing data for ${pair.from} or ${pair.to}`);
+          LoggerService.logBenchmark(`Skipping: Missing data for ${pair.from} or ${pair.to}`);
           continue;
         }
 
@@ -116,28 +92,26 @@ describe('API Benchmark Tests', () => {
           'km'
         );
 
-        const comparison = await ExternalApiService.compareDistances(
+        const comparison = BenchmarkService.compareWithStaticData(
           pair.from,
           pair.to,
-          ourDistance,
-          'km'
+          ourDistance
         );
 
-        if (comparison.externalDistance !== null) {
+        if (comparison.staticDistance !== null) {
           successfulComparisons++;
           results.push({
             pair: `${pair.from} -> ${pair.to}`,
             description: pair.description,
-            ourDistance: comparison.ourDistance,
-            externalDistance: comparison.externalDistance,
+            ourDistance: ourDistance,
+            staticDistance: comparison.staticDistance,
             difference: comparison.difference,
             percentageDifference: comparison.percentageDifference,
             isWithinThreshold: comparison.isWithinThreshold
           });
         }
 
-        // Add delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        // No delay needed for static data
       }
 
       // Calculate statistics
@@ -145,17 +119,17 @@ describe('API Benchmark Tests', () => {
       const averagePercentageDiff = results.reduce((sum, r) => sum + (r.percentageDifference || 0), 0) / results.length;
       const maxPercentageDiff = Math.max(...results.map(r => r.percentageDifference || 0));
 
-      console.log('\n=== BENCHMARK STATISTICS ===');
-      console.log(`Total comparisons: ${totalComparisons}`);
-      console.log(`Successful comparisons: ${successfulComparisons}`);
-      console.log(`Within threshold (5%): ${withinThreshold}/${successfulComparisons}`);
-      console.log(`Average percentage difference: ${averagePercentageDiff.toFixed(2)}%`);
-      console.log(`Maximum percentage difference: ${maxPercentageDiff.toFixed(2)}%`);
+      LoggerService.logBenchmark('\n=== BENCHMARK STATISTICS ===');
+      LoggerService.logBenchmark(`Total comparisons: ${totalComparisons}`);
+      LoggerService.logBenchmark(`Successful comparisons: ${successfulComparisons}`);
+      LoggerService.logBenchmark(`Within threshold (5%): ${withinThreshold}/${successfulComparisons}`);
+      LoggerService.logBenchmark(`Average percentage difference: ${averagePercentageDiff.toFixed(2)}%`);
+      LoggerService.logBenchmark(`Maximum percentage difference: ${maxPercentageDiff.toFixed(2)}%`);
 
       // Detailed results
-      console.log('\n=== DETAILED RESULTS ===');
+      LoggerService.logBenchmark('\n=== DETAILED RESULTS ===');
       results.forEach(result => {
-        console.log(`${result.pair}: ${result.percentageDifference?.toFixed(2)}% diff (${result.isWithinThreshold ? 'PASS' : 'FAIL'})`);
+        LoggerService.logBenchmark(`${result.description} (${result.pair}): ${result.percentageDifference?.toFixed(2)}% diff (${result.isWithinThreshold ? 'PASS' : 'FAIL'})`);
       });
 
       // Assertions - only if we have successful comparisons
@@ -164,11 +138,10 @@ describe('API Benchmark Tests', () => {
         expect(averagePercentageDiff).toBeLessThan(3); // Average should be less than 3%
         expect(maxPercentageDiff).toBeLessThan(10); // Max should be less than 10%
       } else {
-        console.warn('No successful comparisons with external API. This might be due to network issues or API rate limiting.');
-        // Skip assertions if no successful comparisons
-        expect(true).toBe(true); // Dummy assertion to pass test
+        LoggerService.logBenchmark('No successful comparisons with static data. This might be due to missing data in the static dataset.');
+        throw new Error('No successful comparisons with static data. Check if the data is available.');
       }
-    }, 120000); // 2 minute timeout for batch test
+          }); // No timeout needed for static data
   });
 
   describe('Edge Cases', () => {
@@ -178,7 +151,7 @@ describe('API Benchmark Tests', () => {
       const location = await dbService.getZipCode(zipCode);
       
       if (!location) {
-        console.warn('Skipping edge case test: Missing data');
+        LoggerService.logBenchmark('Skipping edge case test: Missing data');
         return;
       }
 
@@ -199,7 +172,7 @@ describe('API Benchmark Tests', () => {
       const toLocation = await dbService.getZipCode('36027'); // Eufaula, AL
 
       if (!fromLocation || !toLocation) {
-        console.warn('Skipping long distance test: Missing data');
+        LoggerService.logBenchmark('Skipping long distance test: Missing data');
         return;
       }
 
@@ -211,23 +184,25 @@ describe('API Benchmark Tests', () => {
         'km'
       );
 
-      const comparison = await ExternalApiService.compareDistances(
+      const comparison = BenchmarkService.compareWithStaticData(
         '99509',
         '36027',
-        ourDistance,
-        'km'
+        ourDistance
       );
 
-      if (comparison.externalDistance !== null) {
-        console.log(`\nLong distance test (AK to AL):`);
-        console.log(`  Our API: ${ourDistance.toFixed(2)} km`);
-        console.log(`  External API: ${comparison.externalDistance.toFixed(2)} km`);
-        console.log(`  Difference: ${comparison.difference?.toFixed(2)} km`);
-        console.log(`  Percentage: ${comparison.percentageDifference?.toFixed(2)}%`);
+      if (comparison.staticDistance !== null) {
+        LoggerService.logBenchmark(`\nLong distance test (AK to AL) (99509 → 36027):`);
+        LoggerService.logBenchmark(`  Our API: ${ourDistance.toFixed(2)} km`);
+        LoggerService.logBenchmark(`  FreeMapTools: ${comparison.staticDistance.toFixed(2)} km`);
+        LoggerService.logBenchmark(`  Difference: ${comparison.difference?.toFixed(2)} km`);
+        LoggerService.logBenchmark(`  Percentage: ${comparison.percentageDifference?.toFixed(2)}%`);
 
         expect(comparison.isWithinThreshold).toBe(true);
         expect(ourDistance).toBeGreaterThan(5000); // Should be a very long distance
+      } else {
+        LoggerService.logBenchmark('No static data available for long distance test (AK to AL)');
+        return;
       }
-    }, 30000);
+    });
   });
 }); 

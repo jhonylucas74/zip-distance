@@ -246,10 +246,10 @@ The API includes a complete suite of unit and integration tests:
 Run `npm run test:coverage` to see the code coverage report.
 
 ### Benchmark Tests
-Run `npm run test:benchmark` to compare our API accuracy with external APIs.
+Run `npm run test:benchmark` to compare our API accuracy with FreeMapTools data.
 
 The benchmark tests:
-- Compare our distance calculations with zip-api.eu
+- Compare our distance calculations with FreeMapTools static data
 - Use real postal codes from the CSV data
 - Ensure accuracy within 5% threshold
 - Test various distance ranges (short, medium, long)

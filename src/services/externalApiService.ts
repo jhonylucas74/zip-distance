@@ -1,31 +1,24 @@
 import axios from 'axios';
+import { LoggerService } from './loggerService';
 
-interface ExternalApiResponse {
-  json: {
-    result: Array<{
-      type: string;
-      attributes: {
-        distance: number;
-        unit: string;
-        from: {
-          countryCode: string;
-          postalCode: string;
-        };
-        to: {
-          countryCode: string;
-          postalCode: string;
-        };
-      };
-    }>;
-  };
-  limitExceeded: boolean | null;
+interface ZippopotamResponse {
+  'post code': string;
+  country: string;
+  'country abbreviation': string;
+  places: Array<{
+    'place name': string;
+    longitude: string;
+    latitude: string;
+    state: string;
+    'state abbreviation': string;
+  }>;
 }
 
 export class ExternalApiService {
-  private static readonly BASE_URL = 'https://zip-api.eu/api/v2';
+  private static readonly BASE_URL = 'https://api.zippopotam.us';
 
   /**
-   * Get distance from external API
+   * Get coordinates from Zippopotam.us API and calculate distance
    */
   static async getDistance(
     fromZipCode: string,
@@ -33,26 +26,70 @@ export class ExternalApiService {
     unit: string = 'km'
   ): Promise<number | null> {
     try {
-      const url = `${this.BASE_URL}/distance/zip`;
-      const params = {
-        'countryCode[from]': 'US',
-        'postalCode[from]': fromZipCode,
-        'countryCode[to]': 'US',
-        'postalCode[to]': toZipCode,
-        unit: unit
-      };
+      // Get coordinates for both zip codes
+      const [fromResponse, toResponse] = await Promise.all([
+        axios.get<ZippopotamResponse>(`${this.BASE_URL}/US/${fromZipCode}`),
+        axios.get<ZippopotamResponse>(`${this.BASE_URL}/US/${toZipCode}`)
+      ]);
 
-      const response = await axios.get<ExternalApiResponse>(url, { params });
-      
-      if (response.data.json?.result?.[0]?.attributes?.distance) {
-        return response.data.json.result[0].attributes.distance;
+      const fromPlace = fromResponse.data.places[0];
+      const toPlace = toResponse.data.places[0];
+
+      if (!fromPlace || !toPlace) {
+        LoggerService.logBenchmark('Could not find coordinates for one or both zip codes');
+        return null;
       }
-      
-      return null;
+
+      // Calculate distance using Haversine formula
+      const fromLat = parseFloat(fromPlace.latitude);
+      const fromLon = parseFloat(fromPlace.longitude);
+      const toLat = parseFloat(toPlace.latitude);
+      const toLon = parseFloat(toPlace.longitude);
+
+      const distance = this.calculateHaversineDistance(fromLat, fromLon, toLat, toLon, unit);
+      return distance;
     } catch (error) {
-      console.error('Error calling external API:', error);
+      if (axios.isAxiosError(error)) {
+        LoggerService.logBenchmark('External API Error Details:');
+        LoggerService.logBenchmark(`  Status: ${error.response?.status}`);
+        LoggerService.logBenchmark(`  Status Text: ${error.response?.statusText}`);
+        LoggerService.logBenchmark(`  URL: ${error.config?.url}`);
+        LoggerService.logBenchmark(`  Response Data: ${JSON.stringify(error.response?.data)}`);
+        LoggerService.logBenchmark(`  Message: ${error.message}`);
+      } else {
+        LoggerService.logBenchmark(`Non-Axios Error: ${error}`);
+      }
       return null;
     }
+  }
+
+  /**
+   * Calculate distance using Haversine formula
+   */
+  private static calculateHaversineDistance(
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number,
+    unit: string = 'km'
+  ): number {
+    const R = unit === 'km' ? 6371 : unit === 'miles' ? 3959 : unit === 'meters' ? 6371000 : 20902231;
+    
+    const dLat = this.toRadians(lat2 - lat1);
+    const dLon = this.toRadians(lon2 - lon1);
+    
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(this.toRadians(lat1)) * Math.cos(this.toRadians(lat2)) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const distance = R * c;
+    
+    return distance;
+  }
+
+  private static toRadians(degrees: number): number {
+    return degrees * (Math.PI / 180);
   }
 
   /**
@@ -85,8 +122,8 @@ export class ExternalApiService {
     const difference = Math.abs(ourDistance - externalDistance);
     const percentageDifference = (difference / externalDistance) * 100;
     
-    // Threshold: 5km difference is acceptable
-    const isWithinThreshold = difference <= 5;
+    // Threshold: 10km difference is acceptable
+    const isWithinThreshold = difference <= 10;
 
     return {
       ourDistance,

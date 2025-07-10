@@ -115,7 +115,7 @@ public
 data/zipcodes.db
 
 # Logs
-logs
+logs/
 *.log
 
 # OS generated files
